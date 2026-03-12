@@ -89,6 +89,7 @@ static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length);
+static void PrintHexBytes(const uint8_t *data, uint16_t length);
 static void SendRoverPacket(const uint8_t *packet, uint16_t length);
 static void SendArmPacketJf(const uint8_t *packet);
 static void FilterXBeeByte(uint8_t byte);
@@ -122,6 +123,22 @@ static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length)
 }
 
 /**
+  * @brief  バイト列を 16 進表記でログ出力する
+  * @param  data ログ出力するデータの先頭アドレス
+  * @param  length data のバイト数
+  * @retval None
+  */
+static void PrintHexBytes(const uint8_t *data, uint16_t length)
+{
+  for (uint16_t i = 0; i < length; i++) {
+    printf("%02X", data[i]);
+    if (i + 1U < length) {
+      printf(" ");
+    }
+  }
+}
+
+/**
   * @brief  rover 向けパケットを CRLF 終端付きで整形して送信する
   * @param  packet rover 向けに送信するデータの先頭アドレス
   * @param  length packet のバイト数
@@ -137,6 +154,7 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)packet, length, HAL_MAX_DELAY);
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)line_ending, sizeof(line_ending) - 1U, HAL_MAX_DELAY);
+  printf("ROVER TX: %.*s\r\n", length, packet);
 }
 
 /**
@@ -147,6 +165,9 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 static void SendArmPacketJf(const uint8_t *packet)
 {
   HAL_UART_Transmit(&ARM_PACKET_JF_UART, (uint8_t *)packet, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
+  printf("ARM TX: ");
+  PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
+  printf("\r\n");
 }
 
 /**
