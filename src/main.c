@@ -21,10 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "stdbool.h"
-#include "string.h"
-#include "stdio.h"
-#include "stdlib.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,9 +31,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define BUFFER_SIZE 8
-#define PACKED_ENCODER_DATA_CAN_ID 0x201
-#define PACKED_MOTOR_VECTOR_CAN_ID 0x202
+#define ROVER_INPUT_UART huart1
+#define ROVER_OUTPUT_UART huart2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -63,7 +59,7 @@ DMA_HandleTypeDef hdma_usart6_rx;
 DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
-
+uint8_t rx_char;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -77,11 +73,21 @@ static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
+static void RelayRoverByte(uint8_t byte);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+  * @brief  rover 向けデータを別 UART にそのまま転送する
+  * @param  byte 転送する 1 バイト
+  * @retval None
+  */
+static void RelayRoverByte(uint8_t byte)
+{
+  HAL_UART_Transmit(&ROVER_OUTPUT_UART, &byte, 1, HAL_MAX_DELAY);
+}
 
 /* USER CODE END 0 */
 
@@ -122,7 +128,7 @@ int main(void)
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_UART_Receive_IT(&ROVER_INPUT_UART, &rx_char, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -209,28 +215,6 @@ static void MX_CAN1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN1_Init 2 */
-  CAN_FilterTypeDef sFilterConfig;
-
-  sFilterConfig.FilterBank = 0;
-  sFilterConfig.FilterMode = CAN_FILTERMODE_IDLIST;
-  sFilterConfig.FilterScale = CAN_FILTERSCALE_16BIT;
-  sFilterConfig.FilterFIFOAssignment = CAN_FILTER_FIFO0; 
-  sFilterConfig.FilterActivation = ENABLE;
-
-  sFilterConfig.FilterIdHigh = PACKED_ENCODER_DATA_CAN_ID << 5;
-  sFilterConfig.FilterIdLow = PACKED_MOTOR_VECTOR_CAN_ID << 5;
-
-  if (HAL_CAN_ConfigFilter(&hcan1, &sFilterConfig) != HAL_OK) {
-		//printf("HAL_CAN_ConfigFilter failed\n");
-		Error_Handler();
-	}
-
-  if (HAL_CAN_Start(&hcan1) != HAL_OK) {
-    //printf("HAL_CAN_Start failed\n");
-    Error_Handler();
-  }
-
-  HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
   /* USER CODE END CAN1_Init 2 */
 
 }
@@ -531,19 +515,16 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-//CAN1の割り込み処理（データをUART1に転送する）
-void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan1){
-  CAN_RxHeaderTypeDef RxHeader;
-  uint8_t RxData[8];
-  uint32_t RxFifo = CAN_RX_FIFO0;
-
-  if (HAL_CAN_GetRxMessage(hcan1, RxFifo, &RxHeader, RxData) != HAL_OK) {
-    //printf("HAL_CAN_GetRxMessage failed\n");
-    Error_Handler();
-  }
-
-  HAL_UART_Transmit_DMA(&huart1, RxData, BUFFER_SIZE);
-
+/**
+  * @brief  rover 入力の UART 受信完了コールバック
+  * @param  huart 受信割り込みが完了した UART ハンドル
+  * @retval None
+  */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == ROVER_INPUT_UART.Instance) {
+        RelayRoverByte(rx_char);
+        HAL_UART_Receive_IT(&ROVER_INPUT_UART, &rx_char, 1);
+    }
 }
 /* USER CODE END 4 */
 
