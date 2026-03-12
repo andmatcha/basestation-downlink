@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stdbool.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,14 +89,20 @@ static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length);
-static void FlushRoverPacket(void);
-static void AppendRoverByte(uint8_t byte);
-static void HandleXBeeByte(uint8_t byte);
+static void SendRoverPacket(const uint8_t *packet, uint16_t length);
+static void SendArmPacketJf(const uint8_t *packet);
+static void FilterXBeeByte(uint8_t byte);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+  * @brief  PacketJF データに対して CRC16-CCITT-FALSE を計算する
+  * @param  data CRC 計算対象のバッファ
+  * @param  length data から計算するバイト数
+  * @retval 計算した CRC16 値
+  */
 static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length)
 {
   uint16_t crc = 0xFFFF;
@@ -114,39 +121,40 @@ static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length)
   return crc;
 }
 
-static void FlushRoverPacket(void)
+/**
+  * @brief  rover 向けパケットを CRLF 終端付きで整形して送信する
+  * @param  packet rover 向けに送信するデータの先頭アドレス
+  * @param  length packet のバイト数
+  * @retval None
+  */
+static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 {
   static const uint8_t line_ending[] = "\r\n";
 
-  if (rover_rx_idx == 0U) {
+  if (length == 0U) {
     return;
   }
 
-  HAL_UART_Transmit(&ROVER_UART, rover_rx_buf, rover_rx_idx, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&ROVER_UART, (uint8_t *)packet, length, HAL_MAX_DELAY);
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)line_ending, sizeof(line_ending) - 1U, HAL_MAX_DELAY);
-  rover_rx_idx = 0U;
 }
 
-static void AppendRoverByte(uint8_t byte)
+/**
+  * @brief  ARM 向けの PacketJF を整形せずにそのまま送信する
+  * @param  packet ARM 向けに送信する PacketJF の先頭アドレス
+  * @retval None
+  */
+static void SendArmPacketJf(const uint8_t *packet)
 {
-  if (byte == '\n') {
-    FlushRoverPacket();
-    return;
-  }
-
-  if (byte == '\r') {
-    return;
-  }
-
-  if (rover_rx_idx < ROVER_PACKET_MAX_LEN) {
-    rover_rx_buf[rover_rx_idx++] = byte;
-    return;
-  }
-
-  rover_rx_idx = 0U;
+  HAL_UART_Transmit(&ARM_PACKET_JF_UART, (uint8_t *)packet, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
 }
 
-static void HandleXBeeByte(uint8_t byte)
+/**
+  * @brief  XBee の受信ストリームをフィルタし、宛先 UART ごとに振り分ける
+  * @param  byte XBee ストリームから受信した 1 バイト
+  * @retval None
+  */
+static void FilterXBeeByte(uint8_t byte)
 {
   if (xbee_rx_mode == XBEE_RX_MODE_ARM) {
     arm_packet_jf_rx_buf[arm_packet_jf_rx_idx++] = byte;
@@ -156,11 +164,11 @@ static void HandleXBeeByte(uint8_t byte)
       uint16_t calculated_crc = CalculateCrc16CcittFalse(arm_packet_jf_rx_buf, ARM_PACKET_JF_CRC_TARGET_SIZE);
 
       if (calculated_crc == received_crc) {
-        HAL_UART_Transmit(&ARM_PACKET_JF_UART, arm_packet_jf_rx_buf, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
+        SendArmPacketJf(arm_packet_jf_rx_buf);
       } else {
-        for (uint16_t i = 0; i < ARM_PACKET_JF_SIZE; i++) {
-          AppendRoverByte(arm_packet_jf_rx_buf[i]);
-        }
+        printf("Invalid PacketJF: received_crc=0x%04X calculated_crc=0x%04X\r\n",
+               received_crc,
+               calculated_crc);
       }
 
       arm_packet_jf_rx_idx = 0U;
@@ -181,7 +189,11 @@ static void HandleXBeeByte(uint8_t byte)
       return;
     }
 
-    AppendRoverByte('J');
+    if (rover_rx_idx < ROVER_PACKET_MAX_LEN) {
+      rover_rx_buf[rover_rx_idx++] = 'J';
+    } else {
+      rover_rx_idx = 0U;
+    }
   }
 
   if (byte == 'J') {
@@ -189,7 +201,22 @@ static void HandleXBeeByte(uint8_t byte)
     return;
   }
 
-  AppendRoverByte(byte);
+  if (byte == '\n') {
+    SendRoverPacket(rover_rx_buf, rover_rx_idx);
+    rover_rx_idx = 0U;
+    return;
+  }
+
+  if (byte == '\r') {
+    return;
+  }
+
+  if (rover_rx_idx < ROVER_PACKET_MAX_LEN) {
+    rover_rx_buf[rover_rx_idx++] = byte;
+    return;
+  }
+
+  rover_rx_idx = 0U;
 }
 
 /* USER CODE END 0 */
@@ -618,9 +645,14 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+  * @brief  XBee 入力の UART 受信完了コールバック
+  * @param  huart 受信割り込みが完了した UART ハンドル
+  * @retval None
+  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == XBEE_UART.Instance) {
-        HandleXBeeByte(rx_char);
+        FilterXBeeByte(rx_char);
         HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
     }
 }
