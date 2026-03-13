@@ -28,21 +28,14 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum {
-  XBEE_RX_MODE_ROVER = 0,
-  XBEE_RX_MODE_ARM,
-} XBeeRxMode;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define XBEE_UART huart1
-#define ROVER_UART huart2
-#define ARM_PACKET_JF_UART huart3
-#define ROVER_PACKET_MAX_LEN 64
-#define ARM_PACKET_JF_SIZE 16
-#define XBEE_LOG_QUEUE_SIZE 128
+#define ROVER_RX_UART huart2
+#define ROVER_TX_UART huart3
+#define ROVER_FORWARD_BUFFER_SIZE 128
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -69,22 +62,11 @@ DMA_HandleTypeDef hdma_usart6_rx;
 DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
-uint8_t rx_char;
-uint8_t rover_rx_buf[ROVER_PACKET_MAX_LEN];
-uint16_t rover_rx_idx = 0;
-uint8_t arm_packet_jf_rx_buf[ARM_PACKET_JF_SIZE];
-uint16_t arm_packet_jf_rx_idx = 0;
-volatile bool rover_packet_pending = false;
-volatile uint16_t rover_packet_len = 0;
-uint8_t rover_packet_buf[ROVER_PACKET_MAX_LEN];
-volatile bool arm_packet_pending = false;
-uint8_t arm_packet_buf[ARM_PACKET_JF_SIZE];
-volatile uint16_t xbee_log_head = 0;
-volatile uint16_t xbee_log_tail = 0;
-uint8_t xbee_log_queue[XBEE_LOG_QUEUE_SIZE];
-volatile bool xbee_log_overflow = false;
-bool rover_pending_j = false;
-XBeeRxMode xbee_rx_mode = XBEE_RX_MODE_ROVER;
+uint8_t rover_rx_byte;
+uint8_t rover_forward_buf[ROVER_FORWARD_BUFFER_SIZE];
+volatile uint16_t rover_forward_head = 0;
+volatile uint16_t rover_forward_tail = 0;
+volatile bool rover_forward_overflow = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,187 +80,54 @@ static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-static void PrintHexBytes(const uint8_t *data, uint16_t length);
-static void SendRoverPacket(const uint8_t *packet, uint16_t length);
-static void SendArmPacketJf(const uint8_t *packet);
-static void FilterXBeeByte(uint8_t byte);
-static void ProcessPendingTransmits(void);
-static void QueueXBeeLogByte(uint8_t byte);
-static void ProcessPendingLogs(void);
+static void ForwardRoverByte(uint8_t byte);
+static void QueueRoverByte(uint8_t byte);
+static void ProcessPendingForward(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/**
-  * @brief  バイト列を 16 進表記でログ出力する
-  * @param  data ログ出力するデータの先頭アドレス
-  * @param  length data のバイト数
-  * @retval None
-  */
-static void PrintHexBytes(const uint8_t *data, uint16_t length)
+static void ForwardRoverByte(uint8_t byte)
 {
-  for (uint16_t i = 0; i < length; i++) {
-    printf("%02X", data[i]);
-    if (i + 1U < length) {
-      printf(" ");
-    }
-  }
+  HAL_UART_Transmit(&ROVER_TX_UART, &byte, 1U, HAL_MAX_DELAY);
 }
 
-/**
-  * @brief  rover 向けパケットを CRLF 終端付きで整形して送信する
-  * @param  packet rover 向けに送信するデータの先頭アドレス
-  * @param  length packet のバイト数
-  * @retval None
-  */
-static void SendRoverPacket(const uint8_t *packet, uint16_t length)
+static void QueueRoverByte(uint8_t byte)
 {
-  static const uint8_t line_ending[] = "\r\n";
+  uint16_t next_head = (uint16_t)((rover_forward_head + 1U) % ROVER_FORWARD_BUFFER_SIZE);
 
-  if (length == 0U) {
+  if (next_head == rover_forward_tail) {
+    rover_forward_overflow = true;
     return;
   }
 
-  HAL_UART_Transmit(&ROVER_UART, (uint8_t *)packet, length, HAL_MAX_DELAY);
-  HAL_UART_Transmit(&ROVER_UART, (uint8_t *)line_ending, sizeof(line_ending) - 1U, HAL_MAX_DELAY);
-  printf("ROVER TX: %.*s\r\n", length, packet);
+  rover_forward_buf[rover_forward_head] = byte;
+  rover_forward_head = next_head;
 }
 
-/**
-  * @brief  ARM 向けの PacketJF を整形せずにそのまま送信する
-  * @param  packet ARM 向けに送信する PacketJF の先頭アドレス
-  * @retval None
-  */
-static void SendArmPacketJf(const uint8_t *packet)
-{
-  HAL_UART_Transmit(&ARM_PACKET_JF_UART, (uint8_t *)packet, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
-  printf("ARM TX: ");
-  PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
-  printf("\r\n");
-}
-
-/**
-  * @brief  XBee の受信ストリームをフィルタし、宛先 UART ごとに振り分ける
-  * @param  byte XBee ストリームから受信した 1 バイト
-  * @retval None
-  */
-static void FilterXBeeByte(uint8_t byte)
-{
-  if (xbee_rx_mode == XBEE_RX_MODE_ARM) {
-    arm_packet_jf_rx_buf[arm_packet_jf_rx_idx++] = byte;
-
-    if (arm_packet_jf_rx_idx >= ARM_PACKET_JF_SIZE) {
-      if (!arm_packet_pending) {
-        memcpy(arm_packet_buf, arm_packet_jf_rx_buf, ARM_PACKET_JF_SIZE);
-        arm_packet_pending = true;
-      }
-      arm_packet_jf_rx_idx = 0U;
-      xbee_rx_mode = XBEE_RX_MODE_ROVER;
-    }
-
-    return;
-  }
-
-  if (rover_pending_j) {
-    rover_pending_j = false;
-
-    if (byte == 'F') {
-      arm_packet_jf_rx_buf[0] = 'J';
-      arm_packet_jf_rx_buf[1] = 'F';
-      arm_packet_jf_rx_idx = 2U;
-      xbee_rx_mode = XBEE_RX_MODE_ARM;
-      return;
-    }
-
-    if (rover_rx_idx < ROVER_PACKET_MAX_LEN) {
-      rover_rx_buf[rover_rx_idx++] = 'J';
-    } else {
-      rover_rx_idx = 0U;
-    }
-  }
-
-  if (byte == 'J') {
-    rover_pending_j = true;
-    return;
-  }
-
-  if (byte == '\n') {
-    if ((rover_rx_idx > 0U) && !rover_packet_pending) {
-      memcpy(rover_packet_buf, rover_rx_buf, rover_rx_idx);
-      rover_packet_len = rover_rx_idx;
-      rover_packet_pending = true;
-    }
-    rover_rx_idx = 0U;
-    return;
-  }
-
-  if (byte == '\r') {
-    return;
-  }
-
-  if (rover_rx_idx < ROVER_PACKET_MAX_LEN) {
-    rover_rx_buf[rover_rx_idx++] = byte;
-    return;
-  }
-
-  rover_rx_idx = 0U;
-}
-
-static void ProcessPendingTransmits(void)
-{
-  uint16_t pending_rover_len;
-
-  if (arm_packet_pending) {
-    __disable_irq();
-    arm_packet_pending = false;
-    __enable_irq();
-    SendArmPacketJf(arm_packet_buf);
-  }
-
-  if (rover_packet_pending) {
-    __disable_irq();
-    pending_rover_len = rover_packet_len;
-    rover_packet_pending = false;
-    __enable_irq();
-    SendRoverPacket(rover_packet_buf, pending_rover_len);
-  }
-}
-
-static void QueueXBeeLogByte(uint8_t byte)
-{
-  uint16_t next_head = (uint16_t)((xbee_log_head + 1U) % XBEE_LOG_QUEUE_SIZE);
-
-  if (next_head == xbee_log_tail) {
-    xbee_log_overflow = true;
-    return;
-  }
-
-  xbee_log_queue[xbee_log_head] = byte;
-  xbee_log_head = next_head;
-}
-
-static void ProcessPendingLogs(void)
+static void ProcessPendingForward(void)
 {
   uint8_t byte;
 
-  if (xbee_log_overflow) {
+  if (rover_forward_overflow) {
     __disable_irq();
-    xbee_log_overflow = false;
+    rover_forward_overflow = false;
     __enable_irq();
-    printf("XBEE LOG OVERFLOW\r\n");
+    printf("ROVER FORWARD OVERFLOW\r\n");
   }
 
-  while (xbee_log_tail != xbee_log_head) {
+  while (rover_forward_tail != rover_forward_head) {
     __disable_irq();
-    if (xbee_log_tail == xbee_log_head) {
+    if (rover_forward_tail == rover_forward_head) {
       __enable_irq();
       break;
     }
-    byte = xbee_log_queue[xbee_log_tail];
-    xbee_log_tail = (uint16_t)((xbee_log_tail + 1U) % XBEE_LOG_QUEUE_SIZE);
+    byte = rover_forward_buf[rover_forward_tail];
+    rover_forward_tail = (uint16_t)((rover_forward_tail + 1U) % ROVER_FORWARD_BUFFER_SIZE);
     __enable_irq();
-    printf("%02X\r\n", byte);
+
+    ForwardRoverByte(byte);
   }
 }
 
@@ -321,7 +170,7 @@ int main(void)
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
+  HAL_UART_Receive_IT(&ROVER_RX_UART, &rover_rx_byte, 1);
   printf("System initialized.\r\n");
   /* USER CODE END 2 */
 
@@ -332,8 +181,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    ProcessPendingTransmits();
-    // ProcessPendingLogs(); // 受信ログ出力は必要に応じて有効化
+    ProcessPendingForward();
   }
   /* USER CODE END 3 */
 }
@@ -711,17 +559,10 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/**
-  * @brief  XBee 入力の UART 受信完了コールバック
-  * @param  huart 受信割り込みが完了した UART ハンドル
-  * @retval None
-  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == XBEE_UART.Instance) {
-        uint8_t received_byte = rx_char;
-        HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
-        QueueXBeeLogByte(received_byte);
-        FilterXBeeByte(received_byte);
+    if (huart->Instance == ROVER_RX_UART.Instance) {
+        QueueRoverByte(rover_rx_byte);
+        HAL_UART_Receive_IT(&ROVER_RX_UART, &rover_rx_byte, 1);
     }
 }
 /* USER CODE END 4 */
