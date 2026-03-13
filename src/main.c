@@ -154,7 +154,7 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)packet, length, HAL_MAX_DELAY);
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)line_ending, sizeof(line_ending) - 1U, HAL_MAX_DELAY);
-  printf("ROVER TX: %.*s\r\n", length, packet);
+  // printf("ROVER TX: %.*s\r\n", length, packet);
 }
 
 /**
@@ -165,9 +165,9 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 static void SendArmPacketJf(const uint8_t *packet)
 {
   HAL_UART_Transmit(&ARM_PACKET_JF_UART, (uint8_t *)packet, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
-  printf("ARM TX: ");
-  PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
-  printf("\r\n");
+  // printf("ARM TX: ");
+  // PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
+  // printf("\r\n");
 }
 
 /**
@@ -674,6 +674,7 @@ static void MX_GPIO_Init(void)
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == XBEE_UART.Instance) {
+        printf("XBEE RX: %02X\r\n", rx_char);
         FilterXBeeByte(rx_char);
         HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
     }
