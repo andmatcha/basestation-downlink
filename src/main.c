@@ -24,6 +24,7 @@
 #include "stdbool.h"
 #include "string.h"
 #include "stdio.h"
+#include "stdint.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -85,6 +86,8 @@ uint8_t xbee_log_queue[XBEE_LOG_QUEUE_SIZE];
 volatile bool xbee_log_overflow = false;
 bool rover_pending_j = false;
 XBeeRxMode xbee_rx_mode = XBEE_RX_MODE_ROVER;
+uint32_t dummy_rover_rng_state = 0x13572468U;
+uint32_t dummy_rover_last_tx_tick = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,6 +108,8 @@ static void FilterXBeeByte(uint8_t byte);
 static void ProcessPendingTransmits(void);
 static void QueueXBeeLogByte(uint8_t byte);
 static void ProcessPendingLogs(void);
+static uint16_t GenerateDummyRoverValue(void);
+static void SendDummyRoverPacket(void);
 
 /* USER CODE END PFP */
 
@@ -282,6 +287,25 @@ static void ProcessPendingLogs(void)
   }
 }
 
+static uint16_t GenerateDummyRoverValue(void)
+{
+  dummy_rover_rng_state = (dummy_rover_rng_state * 1664525U) + 1013904223U + HAL_GetTick();
+  return (uint16_t)(dummy_rover_rng_state % 1000U);
+}
+
+static void SendDummyRoverPacket(void)
+{
+  char packet[16];
+  uint16_t value = GenerateDummyRoverValue();
+  int length = snprintf(packet, sizeof(packet), "0x301,%03u", value);
+
+  if (length <= 0) {
+    return;
+  }
+
+  SendRoverPacket((const uint8_t *)packet, (uint16_t)length);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -333,6 +357,10 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     ProcessPendingTransmits();
+    if ((HAL_GetTick() - dummy_rover_last_tx_tick) >= 100U) {
+      dummy_rover_last_tx_tick = HAL_GetTick();
+      SendDummyRoverPacket();
+    }
     // ProcessPendingLogs(); // 受信ログ出力は必要に応じて有効化
   }
   /* USER CODE END 3 */
