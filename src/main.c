@@ -142,7 +142,7 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)packet, length, HAL_MAX_DELAY);
   HAL_UART_Transmit(&ROVER_UART, (uint8_t *)line_ending, sizeof(line_ending) - 1U, HAL_MAX_DELAY);
-  // printf("ROVER TX: %.*s\r\n", length, packet);
+  printf("ROVER TX: %.*s\r\n", length, packet);
 }
 
 /**
@@ -153,9 +153,9 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
 static void SendArmPacketJf(const uint8_t *packet)
 {
   HAL_UART_Transmit(&ARM_PACKET_JF_UART, (uint8_t *)packet, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
-  // printf("ARM TX: ");
-  // PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
-  // printf("\r\n");
+  printf("ARM TX: ");
+  PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
+  printf("\r\n");
 }
 
 /**
@@ -333,7 +333,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     ProcessPendingTransmits();
-    ProcessPendingLogs();
+    // ProcessPendingLogs(); // 受信ログ出力は必要に応じて有効化
   }
   /* USER CODE END 3 */
 }
