@@ -21,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdbool.h"
+#include "string.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,8 +33,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ROVER_INPUT_UART huart1
-#define ROVER_OUTPUT_UART huart2
+#define ROVER_RX_UART huart2
+#define ROVER_TX_UART huart3
+#define ROVER_FORWARD_BUFFER_SIZE 128
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -59,7 +62,11 @@ DMA_HandleTypeDef hdma_usart6_rx;
 DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
-uint8_t rx_char;
+uint8_t rover_rx_byte;
+uint8_t rover_forward_buf[ROVER_FORWARD_BUFFER_SIZE];
+volatile uint16_t rover_forward_head = 0;
+volatile uint16_t rover_forward_tail = 0;
+volatile bool rover_forward_overflow = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -73,20 +80,55 @@ static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-static void RelayRoverByte(uint8_t byte);
+static void ForwardRoverByte(uint8_t byte);
+static void QueueRoverByte(uint8_t byte);
+static void ProcessPendingForward(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/**
-  * @brief  rover 向けデータを別 UART にそのまま転送する
-  * @param  byte 転送する 1 バイト
-  * @retval None
-  */
-static void RelayRoverByte(uint8_t byte)
+static void ForwardRoverByte(uint8_t byte)
 {
-  HAL_UART_Transmit(&ROVER_OUTPUT_UART, &byte, 1, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&ROVER_TX_UART, &byte, 1U, HAL_MAX_DELAY);
+}
+
+static void QueueRoverByte(uint8_t byte)
+{
+  uint16_t next_head = (uint16_t)((rover_forward_head + 1U) % ROVER_FORWARD_BUFFER_SIZE);
+
+  if (next_head == rover_forward_tail) {
+    rover_forward_overflow = true;
+    return;
+  }
+
+  rover_forward_buf[rover_forward_head] = byte;
+  rover_forward_head = next_head;
+}
+
+static void ProcessPendingForward(void)
+{
+  uint8_t byte;
+
+  if (rover_forward_overflow) {
+    __disable_irq();
+    rover_forward_overflow = false;
+    __enable_irq();
+    printf("ROVER FORWARD OVERFLOW\r\n");
+  }
+
+  while (rover_forward_tail != rover_forward_head) {
+    __disable_irq();
+    if (rover_forward_tail == rover_forward_head) {
+      __enable_irq();
+      break;
+    }
+    byte = rover_forward_buf[rover_forward_tail];
+    rover_forward_tail = (uint16_t)((rover_forward_tail + 1U) % ROVER_FORWARD_BUFFER_SIZE);
+    __enable_irq();
+
+    ForwardRoverByte(byte);
+  }
 }
 
 /* USER CODE END 0 */
@@ -128,7 +170,8 @@ int main(void)
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&ROVER_INPUT_UART, &rx_char, 1);
+  HAL_UART_Receive_IT(&ROVER_RX_UART, &rover_rx_byte, 1);
+  printf("System initialized.\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -138,6 +181,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    ProcessPendingForward();
   }
   /* USER CODE END 3 */
 }
@@ -515,15 +559,10 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/**
-  * @brief  rover 入力の UART 受信完了コールバック
-  * @param  huart 受信割り込みが完了した UART ハンドル
-  * @retval None
-  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == ROVER_INPUT_UART.Instance) {
-        RelayRoverByte(rx_char);
-        HAL_UART_Receive_IT(&ROVER_INPUT_UART, &rx_char, 1);
+    if (huart->Instance == ROVER_RX_UART.Instance) {
+        QueueRoverByte(rover_rx_byte);
+        HAL_UART_Receive_IT(&ROVER_RX_UART, &rover_rx_byte, 1);
     }
 }
 /* USER CODE END 4 */
@@ -535,6 +574,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
+  printf("Error occurred!\r\n");
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
