@@ -6,8 +6,8 @@
 
 - `USART1` は XBee からの受信入力として使用する
 - `USART2` は rover 向けの送信出力として使用する
-- `USART6` は ARM 向け `PacketJF` の送信出力として使用する
-- `USART3` は初期化されるが、現状の `main.c` では送受信処理に使用していない
+- `USART3` は ARM 向け `PacketJF` の送信出力として使用する
+- `USART6` は初期化されるが、現状の `main.c` では送受信処理に使用していない
 
 ## UART 割り当て
 
@@ -15,8 +15,8 @@
 | --- | --- | --- | --- | --- |
 | `USART1` | `XBEE_UART` | 入力 | XBee からの受信ストリーム | `57600` |
 | `USART2` | `ROVER_UART` | 出力 | rover 向けデータ送信 | `115200` |
-| `USART3` | なし | 未使用 | 初期化のみ | `57600` |
-| `USART6` | `ARM_PACKET_JF_UART` | 出力 | ARM 向け `PacketJF` 送信 | `115200` |
+| `USART3` | `ARM_PACKET_JF_UART` | 出力 | ARM 向け `PacketJF` 送信 | `57600` |
+| `USART6` | なし | 未使用 | 初期化のみ | `115200` |
 
 すべての UART 設定は以下で共通です
 
@@ -54,7 +54,7 @@ XBee から受信したデータは、以下の 2 種類として扱う
 - ヘッダ検出後は合計 `16` バイトを `PacketJF` として受信する
 - CRC 対象はオフセット `0` から `13` までの `14` バイト
 - CRC は `CRC16-CCITT-FALSE`
-- CRC が正しい場合は `SendArmPacketJf()` で `USART6` にそのまま送信する
+- CRC が正しい場合は `SendArmPacketJf()` で `USART3` にそのまま送信する
 - 送信時に改行や追加整形は行わない
 
 ## `PacketJF` 判定仕様
@@ -95,7 +95,7 @@ XBee から受信したデータは、以下の 2 種類として扱う
 ### `ARM_PACKET_JF_UART` への送信
 
 - 送信関数: `SendArmPacketJf()`
-- 送信先: `USART6`
+- 送信先: `USART3`
 - データ形式:
   `PacketJF` 16 バイトをそのまま送信
 - 送信 API:
@@ -114,6 +114,6 @@ XBee から受信したデータは、以下の 2 種類として扱う
 
 ## 補足
 
-- `main.c` 内では `USART1`, `USART2`, `USART6` のみが実際のデータ経路に関与する
-- `USART3` は初期化されているが、現時点では入出力先として未接続
+- `main.c` 内では `USART1`, `USART2`, `USART3` のみが実際のデータ経路に関与する
+- `USART6` は初期化されているが、現時点では入出力先として未接続
 - `printf()` の出力先は `src/printf.c` の `_write()` 実装に従い ITM であり、UART には出力されない

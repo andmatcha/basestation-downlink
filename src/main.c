@@ -38,7 +38,7 @@ typedef enum {
 /* USER CODE BEGIN PD */
 #define XBEE_UART huart1
 #define ROVER_UART huart2
-#define ARM_PACKET_JF_UART huart6
+#define ARM_PACKET_JF_UART huart3
 #define ROVER_PACKET_MAX_LEN 64
 #define ARM_PACKET_JF_SIZE 16
 #define ARM_PACKET_JF_CRC_TARGET_SIZE 14
@@ -280,6 +280,7 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
+  printf("System initialized.\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -686,6 +687,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
+  printf("Error occurred!\r\n");
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
