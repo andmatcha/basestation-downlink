@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stdbool.h"
+#include "string.h"
 #include "stdio.h"
 /* USER CODE END Includes */
 
@@ -41,6 +42,7 @@ typedef enum {
 #define ARM_PACKET_JF_UART huart3
 #define ROVER_PACKET_MAX_LEN 64
 #define ARM_PACKET_JF_SIZE 16
+#define XBEE_LOG_QUEUE_SIZE 128
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,6 +74,15 @@ uint8_t rover_rx_buf[ROVER_PACKET_MAX_LEN];
 uint16_t rover_rx_idx = 0;
 uint8_t arm_packet_jf_rx_buf[ARM_PACKET_JF_SIZE];
 uint16_t arm_packet_jf_rx_idx = 0;
+volatile bool rover_packet_pending = false;
+volatile uint16_t rover_packet_len = 0;
+uint8_t rover_packet_buf[ROVER_PACKET_MAX_LEN];
+volatile bool arm_packet_pending = false;
+uint8_t arm_packet_buf[ARM_PACKET_JF_SIZE];
+volatile uint16_t xbee_log_head = 0;
+volatile uint16_t xbee_log_tail = 0;
+uint8_t xbee_log_queue[XBEE_LOG_QUEUE_SIZE];
+volatile bool xbee_log_overflow = false;
 bool rover_pending_j = false;
 XBeeRxMode xbee_rx_mode = XBEE_RX_MODE_ROVER;
 /* USER CODE END PV */
@@ -91,6 +102,9 @@ static void PrintHexBytes(const uint8_t *data, uint16_t length);
 static void SendRoverPacket(const uint8_t *packet, uint16_t length);
 static void SendArmPacketJf(const uint8_t *packet);
 static void FilterXBeeByte(uint8_t byte);
+static void ProcessPendingTransmits(void);
+static void QueueXBeeLogByte(uint8_t byte);
+static void ProcessPendingLogs(void);
 
 /* USER CODE END PFP */
 
@@ -155,7 +169,10 @@ static void FilterXBeeByte(uint8_t byte)
     arm_packet_jf_rx_buf[arm_packet_jf_rx_idx++] = byte;
 
     if (arm_packet_jf_rx_idx >= ARM_PACKET_JF_SIZE) {
-      SendArmPacketJf(arm_packet_jf_rx_buf);
+      if (!arm_packet_pending) {
+        memcpy(arm_packet_buf, arm_packet_jf_rx_buf, ARM_PACKET_JF_SIZE);
+        arm_packet_pending = true;
+      }
       arm_packet_jf_rx_idx = 0U;
       xbee_rx_mode = XBEE_RX_MODE_ROVER;
     }
@@ -187,7 +204,11 @@ static void FilterXBeeByte(uint8_t byte)
   }
 
   if (byte == '\n') {
-    SendRoverPacket(rover_rx_buf, rover_rx_idx);
+    if ((rover_rx_idx > 0U) && !rover_packet_pending) {
+      memcpy(rover_packet_buf, rover_rx_buf, rover_rx_idx);
+      rover_packet_len = rover_rx_idx;
+      rover_packet_pending = true;
+    }
     rover_rx_idx = 0U;
     return;
   }
@@ -202,6 +223,63 @@ static void FilterXBeeByte(uint8_t byte)
   }
 
   rover_rx_idx = 0U;
+}
+
+static void ProcessPendingTransmits(void)
+{
+  uint16_t pending_rover_len;
+
+  if (arm_packet_pending) {
+    __disable_irq();
+    arm_packet_pending = false;
+    __enable_irq();
+    SendArmPacketJf(arm_packet_buf);
+  }
+
+  if (rover_packet_pending) {
+    __disable_irq();
+    pending_rover_len = rover_packet_len;
+    rover_packet_pending = false;
+    __enable_irq();
+    SendRoverPacket(rover_packet_buf, pending_rover_len);
+  }
+}
+
+static void QueueXBeeLogByte(uint8_t byte)
+{
+  uint16_t next_head = (uint16_t)((xbee_log_head + 1U) % XBEE_LOG_QUEUE_SIZE);
+
+  if (next_head == xbee_log_tail) {
+    xbee_log_overflow = true;
+    return;
+  }
+
+  xbee_log_queue[xbee_log_head] = byte;
+  xbee_log_head = next_head;
+}
+
+static void ProcessPendingLogs(void)
+{
+  uint8_t byte;
+
+  if (xbee_log_overflow) {
+    __disable_irq();
+    xbee_log_overflow = false;
+    __enable_irq();
+    printf("XBEE LOG OVERFLOW\r\n");
+  }
+
+  while (xbee_log_tail != xbee_log_head) {
+    __disable_irq();
+    if (xbee_log_tail == xbee_log_head) {
+      __enable_irq();
+      break;
+    }
+    byte = xbee_log_queue[xbee_log_tail];
+    xbee_log_tail = (uint16_t)((xbee_log_tail + 1U) % XBEE_LOG_QUEUE_SIZE);
+    __enable_irq();
+    printf("%02X\r\n", byte);
+  }
 }
 
 /* USER CODE END 0 */
@@ -254,6 +332,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    ProcessPendingTransmits();
+    ProcessPendingLogs();
   }
   /* USER CODE END 3 */
 }
@@ -638,9 +718,10 @@ static void MX_GPIO_Init(void)
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == XBEE_UART.Instance) {
-        printf("XBEE RX: %02X\r\n", rx_char);
-        FilterXBeeByte(rx_char);
+        uint8_t received_byte = rx_char;
         HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
+        QueueXBeeLogByte(received_byte);
+        FilterXBeeByte(received_byte);
     }
 }
 /* USER CODE END 4 */
