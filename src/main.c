@@ -41,7 +41,6 @@ typedef enum {
 #define ARM_PACKET_JF_UART huart3
 #define ROVER_PACKET_MAX_LEN 64
 #define ARM_PACKET_JF_SIZE 16
-#define ARM_PACKET_JF_CRC_TARGET_SIZE 14
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -88,7 +87,6 @@ static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length);
 static void PrintHexBytes(const uint8_t *data, uint16_t length);
 static void SendRoverPacket(const uint8_t *packet, uint16_t length);
 static void SendArmPacketJf(const uint8_t *packet);
@@ -98,30 +96,6 @@ static void FilterXBeeByte(uint8_t byte);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/**
-  * @brief  PacketJF データに対して CRC16-CCITT-FALSE を計算する
-  * @param  data CRC 計算対象のバッファ
-  * @param  length data から計算するバイト数
-  * @retval 計算した CRC16 値
-  */
-static uint16_t CalculateCrc16CcittFalse(const uint8_t *data, uint16_t length)
-{
-  uint16_t crc = 0xFFFF;
-
-  for (uint16_t i = 0; i < length; i++) {
-    crc ^= (uint16_t)data[i] << 8;
-    for (uint8_t bit = 0; bit < 8; bit++) {
-      if ((crc & 0x8000U) != 0U) {
-        crc = (uint16_t)((crc << 1) ^ 0x1021U);
-      } else {
-        crc <<= 1;
-      }
-    }
-  }
-
-  return crc;
-}
-
 /**
   * @brief  バイト列を 16 進表記でログ出力する
   * @param  data ログ出力するデータの先頭アドレス
@@ -181,17 +155,7 @@ static void FilterXBeeByte(uint8_t byte)
     arm_packet_jf_rx_buf[arm_packet_jf_rx_idx++] = byte;
 
     if (arm_packet_jf_rx_idx >= ARM_PACKET_JF_SIZE) {
-      uint16_t received_crc = (uint16_t)arm_packet_jf_rx_buf[14] | ((uint16_t)arm_packet_jf_rx_buf[15] << 8);
-      uint16_t calculated_crc = CalculateCrc16CcittFalse(arm_packet_jf_rx_buf, ARM_PACKET_JF_CRC_TARGET_SIZE);
-
-      if (calculated_crc == received_crc) {
-        SendArmPacketJf(arm_packet_jf_rx_buf);
-      } else {
-        printf("Invalid PacketJF: received_crc=0x%04X calculated_crc=0x%04X\r\n",
-               received_crc,
-               calculated_crc);
-      }
-
+      SendArmPacketJf(arm_packet_jf_rx_buf);
       arm_packet_jf_rx_idx = 0U;
       xbee_rx_mode = XBEE_RX_MODE_ROVER;
     }
