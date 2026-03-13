@@ -34,8 +34,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define ROVER_RX_UART huart2
-#define ROVER_TX_UART huart3
 #define ROVER_FORWARD_BUFFER_SIZE 128
+#define ROVER_TX_CAN_STD_ID 0x123U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,6 +67,7 @@ uint8_t rover_forward_buf[ROVER_FORWARD_BUFFER_SIZE];
 volatile uint16_t rover_forward_head = 0;
 volatile uint16_t rover_forward_tail = 0;
 volatile bool rover_forward_overflow = false;
+CAN_TxHeaderTypeDef rover_tx_can_header;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,13 +77,13 @@ static void MX_DMA_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_USART3_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void ForwardRoverByte(uint8_t byte);
 static void QueueRoverByte(uint8_t byte);
 static void ProcessPendingForward(void);
+static void InitRoverTxCan(void);
 
 /* USER CODE END PFP */
 
@@ -90,7 +91,28 @@ static void ProcessPendingForward(void);
 /* USER CODE BEGIN 0 */
 static void ForwardRoverByte(uint8_t byte)
 {
-  HAL_UART_Transmit(&ROVER_TX_UART, &byte, 1U, HAL_MAX_DELAY);
+  uint32_t tx_mailbox;
+
+  while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0U) {
+  }
+
+  if (HAL_CAN_AddTxMessage(&hcan1, &rover_tx_can_header, &byte, &tx_mailbox) != HAL_OK) {
+    Error_Handler();
+  }
+}
+
+static void InitRoverTxCan(void)
+{
+  rover_tx_can_header.StdId = ROVER_TX_CAN_STD_ID;
+  rover_tx_can_header.ExtId = 0U;
+  rover_tx_can_header.IDE = CAN_ID_STD;
+  rover_tx_can_header.RTR = CAN_RTR_DATA;
+  rover_tx_can_header.DLC = 1U;
+  rover_tx_can_header.TransmitGlobalTime = DISABLE;
+
+  if (HAL_CAN_Start(&hcan1) != HAL_OK) {
+    Error_Handler();
+  }
 }
 
 static void QueueRoverByte(uint8_t byte)
@@ -166,10 +188,10 @@ int main(void)
   MX_CAN1_Init();
   MX_TIM2_Init();
   MX_USART2_UART_Init();
-  MX_USART3_UART_Init();
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  InitRoverTxCan();
   HAL_UART_Receive_IT(&ROVER_RX_UART, &rover_rx_byte, 1);
   printf("System initialized.\r\n");
   /* USER CODE END 2 */
@@ -390,39 +412,6 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * @brief USART3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART3_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART3_Init 0 */
-
-  /* USER CODE END USART3_Init 0 */
-
-  /* USER CODE BEGIN USART3_Init 1 */
-
-  /* USER CODE END USART3_Init 1 */
-  huart3.Instance = USART3;
-  huart3.Init.BaudRate = 57600;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
-  huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX_RX;
-  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART3_Init 2 */
-
-  /* USER CODE END USART3_Init 2 */
 
 }
 
