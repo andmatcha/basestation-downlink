@@ -40,9 +40,10 @@ typedef enum {
 /* USER CODE BEGIN PD */
 #define XBEE_UART huart1
 #define ROVER_UART huart2
-#define ARM_PACKET_JF_UART huart3
 #define ROVER_PACKET_MAX_LEN 64
 #define ARM_PACKET_JF_SIZE 16
+#define ARM_PACKET_JF_CAN_DLC 1
+#define ARM_PACKET_JF_CAN_ID 0x123U
 #define XBEE_LOG_QUEUE_SIZE 128
 /* USER CODE END PD */
 
@@ -86,8 +87,6 @@ uint8_t xbee_log_queue[XBEE_LOG_QUEUE_SIZE];
 volatile bool xbee_log_overflow = false;
 bool rover_pending_j = false;
 XBeeRxMode xbee_rx_mode = XBEE_RX_MODE_ROVER;
-uint32_t dummy_rover_rng_state = 0x13572468U;
-uint32_t dummy_rover_last_tx_tick = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -104,12 +103,11 @@ static void MX_USART1_UART_Init(void);
 static void PrintHexBytes(const uint8_t *data, uint16_t length);
 static void SendRoverPacket(const uint8_t *packet, uint16_t length);
 static void SendArmPacketJf(const uint8_t *packet);
+static void StartCan1(void);
 static void FilterXBeeByte(uint8_t byte);
 static void ProcessPendingTransmits(void);
 static void QueueXBeeLogByte(uint8_t byte);
 static void ProcessPendingLogs(void);
-static uint16_t GenerateDummyRoverValue(void);
-static void SendDummyRoverPacket(void);
 
 /* USER CODE END PFP */
 
@@ -157,10 +155,39 @@ static void SendRoverPacket(const uint8_t *packet, uint16_t length)
   */
 static void SendArmPacketJf(const uint8_t *packet)
 {
-  HAL_UART_Transmit(&ARM_PACKET_JF_UART, (uint8_t *)packet, ARM_PACKET_JF_SIZE, HAL_MAX_DELAY);
+  CAN_TxHeaderTypeDef tx_header = {0};
+  uint32_t tx_mailbox;
+
+  tx_header.IDE = CAN_ID_STD;
+  tx_header.RTR = CAN_RTR_DATA;
+  tx_header.DLC = ARM_PACKET_JF_CAN_DLC;
+  tx_header.TransmitGlobalTime = DISABLE;
+
+  tx_header.StdId = ARM_PACKET_JF_CAN_ID;
+
+  for (uint32_t frame_index = 0U; frame_index < ARM_PACKET_JF_SIZE; frame_index++) {
+
+    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0U) {
+    }
+
+    if (HAL_CAN_AddTxMessage(&hcan1,
+                             &tx_header,
+                             (uint8_t *)&packet[frame_index],
+                             &tx_mailbox) != HAL_OK) {
+      Error_Handler();
+    }
+  }
+
   printf("ARM TX: ");
   PrintHexBytes(packet, ARM_PACKET_JF_SIZE);
   printf("\r\n");
+}
+
+static void StartCan1(void)
+{
+  if (HAL_CAN_Start(&hcan1) != HAL_OK) {
+    Error_Handler();
+  }
 }
 
 /**
@@ -287,25 +314,6 @@ static void ProcessPendingLogs(void)
   }
 }
 
-static uint16_t GenerateDummyRoverValue(void)
-{
-  dummy_rover_rng_state = (dummy_rover_rng_state * 1664525U) + 1013904223U + HAL_GetTick();
-  return (uint16_t)(dummy_rover_rng_state % 1000U);
-}
-
-static void SendDummyRoverPacket(void)
-{
-  char packet[16];
-  uint16_t value = GenerateDummyRoverValue();
-  int length = snprintf(packet, sizeof(packet), "0x301,%03u", value);
-
-  if (length <= 0) {
-    return;
-  }
-
-  SendRoverPacket((const uint8_t *)packet, (uint16_t)length);
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -345,6 +353,7 @@ int main(void)
   MX_USART6_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  StartCan1();
   HAL_UART_Receive_IT(&XBEE_UART, &rx_char, 1);
   printf("System initialized.\r\n");
   /* USER CODE END 2 */
@@ -357,10 +366,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     ProcessPendingTransmits();
-    if ((HAL_GetTick() - dummy_rover_last_tx_tick) >= 100U) {
-      dummy_rover_last_tx_tick = HAL_GetTick();
-      SendDummyRoverPacket();
-    }
     // ProcessPendingLogs(); // 受信ログ出力は必要に応じて有効化
   }
   /* USER CODE END 3 */
